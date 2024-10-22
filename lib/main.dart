@@ -3,6 +3,9 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:health_management_admin/firebase_options.dart';
 import 'package:intl/intl.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:firebase_storage/firebase_storage.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -245,16 +248,105 @@ class AppointmentCard extends StatelessWidget {
 
   const AppointmentCard({required this.appointment});
 
+  Future<void> uploadPDF(BuildContext context) async {
+    // Pick a PDF file using the file picker
+    FilePickerResult? result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['pdf'],
+    );
+
+    if (result != null) {
+      // Get the selected file
+      PlatformFile file = result.files.first;
+
+      try {
+        // Firebase Storage reference
+        FirebaseStorage storage = FirebaseStorage.instance;
+        Reference ref = storage.ref().child('appointment_reports/${file.name}');
+
+        // Start upload
+        UploadTask uploadTask = ref.putData(file.bytes!);
+
+        // Show upload progress dialog
+        showDialog(
+          context: context,
+          barrierDismissible: false,
+          builder: (BuildContext context) {
+            return AlertDialog(
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  CircularProgressIndicator(),
+                  SizedBox(height: 20),
+                  Text('Uploading...'),
+                ],
+              ),
+            );
+          },
+        );
+
+        // Monitor the upload progress
+        uploadTask.snapshotEvents.listen((TaskSnapshot snapshot) {
+          double progress =
+              snapshot.bytesTransferred / snapshot.totalBytes * 100;
+          print('Upload is $progress% complete');
+        });
+
+        // Wait for upload to complete
+        TaskSnapshot snapshot = await uploadTask;
+
+        // Close the progress dialog
+        Navigator.of(context).pop();
+
+        // Get the download URL of the uploaded file
+        String downloadUrl = await snapshot.ref.getDownloadURL();
+
+        // Update Firestore document with the PDF download URL
+        await FirebaseFirestore.instance
+            .collection('appointments')
+            .doc(appointment.id)
+            .update({'report_pdf': downloadUrl});
+
+        // Show success message
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('PDF uploaded successfully!')),
+        );
+      } catch (e) {
+        // Close the progress dialog
+        Navigator.of(context).pop();
+
+        // Show error message
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to upload PDF: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> viewPDF(String pdfUrl) async {
+    // Check if the URL can be launched
+    if (await canLaunch(pdfUrl)) {
+      await launch(pdfUrl);
+    } else {
+      throw 'Could not launch $pdfUrl';
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    final bool isReportUploaded =
+        (appointment.data() as Map<String, dynamic>).containsKey('report_pdf');
+
     return Card(
       elevation: 4,
       margin: EdgeInsets.symmetric(vertical: 5),
       color: Colors.blue[50],
       child: ListTile(
         leading: Icon(Icons.calendar_today, color: Colors.blue),
-        title: Text('${appointment['name']}',
-            style: TextStyle(fontWeight: FontWeight.bold)),
+        title: Text(
+          '${appointment['name']}',
+          style: TextStyle(fontWeight: FontWeight.bold),
+        ),
         subtitle: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -263,6 +355,40 @@ class AppointmentCard extends StatelessWidget {
             Text('Email: ${appointment['email']}'),
             Text('Phone: ${appointment['phone']}'),
             Text('Payment Status: ${appointment['payment_status']}'),
+            SizedBox(height: 10),
+            if (!isReportUploaded && appointment['payment_status'] == 'paid')
+              ElevatedButton.icon(
+                onPressed: () => uploadPDF(context),
+                icon: Icon(Icons.upload_file),
+                label: Text('Upload Report PDF'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.blueAccent,
+                ),
+              ),
+            if (isReportUploaded)
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Prescription Uploaded',
+                    style: TextStyle(
+                      color: Colors.green,
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      fontFamily: 'Montserrat', // Use a custom font
+                    ),
+                  ),
+                  SizedBox(height: 10),
+                  ElevatedButton.icon(
+                    onPressed: () => viewPDF(appointment['report_pdf']),
+                    icon: Icon(Icons.picture_as_pdf),
+                    label: Text('View PDF'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.green,
+                    ),
+                  ),
+                ],
+              ),
           ],
         ),
       ),
